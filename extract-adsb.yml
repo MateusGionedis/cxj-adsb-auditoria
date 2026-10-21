@@ -1,0 +1,56 @@
+name: CXJ - Extrair ADSB.lol
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Dia UTC (YYYY-MM-DD)'
+        required: true
+        default: '2026-06-29'
+      icao24:
+        description: 'ICAO24 separados por vírgula'
+        required: true
+        default: 'e494b4'
+      source:
+        description: 'Usar prod (padrão) ou staging'
+        required: true
+        type: choice
+        options: [prod, staging]
+        default: prod
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Consultar partes de release e processar TAR em streaming
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATE: ${{ inputs.date }}
+          HEXES: ${{ inputs.icao24 }}
+          SOURCE: ${{ inputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="${DATE//-/.}"
+          tag="v${d}-planes-readsb-${SOURCE}-0"
+          echo "Buscando release ${tag}"
+          gh api "repos/adsblol/globe_history_2026/releases/tags/${tag}" --jq '.assets[].browser_download_url' \
+            | grep -E '\.tar\.[a-z][a-z]$' | sort > parts.txt
+          if [[ ! -s parts.txt ]]; then echo 'Sem partes TAR para essa data/fonte'; exit 1; fi
+          echo "Quantidade de partes: $(wc -l < parts.txt)"
+          (
+            while IFS= read -r url; do
+              echo "Transferindo parte $(basename "$url")" >&2
+              curl --location --fail --silent --show-error --retry 3 --retry-delay 5 "$url"
+            done < parts.txt
+          ) | python3 scripts/extract.py --date "$DATE" --hexes "$HEXES"
+      - name: Publicar resultado compacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cxj-adsb-${{ inputs.date }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
